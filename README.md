@@ -1,5 +1,5 @@
 # XRPL.C Unity Samples
-Samples to use with Dangell7's XRPL.C Unity asset
+Samples to use with Dangell7's [XRPL.C Unity asset](https://github.com/Transia-RnD/xrpl.c.unity)
 
 ## Features
 
