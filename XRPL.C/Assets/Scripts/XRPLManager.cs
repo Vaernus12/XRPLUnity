@@ -11,7 +11,12 @@ using Xrpl.Client;
 using Xrpl.Client.Models.Common;
 using Xrpl.Client.Models.Methods;
 using Xrpl.Client.Models.Transactions;
-using Xrpl.Wallet;
+using Xrpl.XrplWallet;
+using Ripple.Keypairs;
+using Ripple.Address.Codec;
+using static Ripple.Address.Codec.XrplCodec;
+using static Xrpl.XrplWallet.Wallet;
+using Newtonsoft.Json;
 
 namespace XRPL.C
 {
@@ -46,15 +51,16 @@ namespace XRPL.C
 
         private void Start()
         {
-            if (!ReturnValidXRPAddress(XRPLAddress)) Debug.LogError("Invalid XRPL Address!");
+            if (!XrplCodec.IsValidClassicAddress(XRPLAddress)) Debug.LogError("Invalid XRPL Address!");
             else Debug.Log("Validated XRPL Address!");
-            if (!ReturnValidXRPAddress(TargetAddress)) Debug.LogError("Invalid Target Address!");
+            if (!XrplCodec.IsValidClassicAddress(TargetAddress)) Debug.LogError("Invalid Target Address!");
             else Debug.Log("Validated Target Address!");
 
             string currencyCodeVal = CurrencyCode;
             if (currencyCodeVal.Length != 3) CurrencyCode = AddZeros(ConvertHex(CurrencyCode));
 
             PaymentTextQueue = new Queue<string>();
+
             BookOffersTextQueue = new Queue<string>();
             BalanceTextQueue = new Queue<string>();
             TrustlinesTextQueue = new Queue<string>();
@@ -85,6 +91,7 @@ namespace XRPL.C
 
         public void SendPayment()
         {
+            Debug.Log("Sending Payment!");
             var sendRewardTask = Task.Run(async () =>
             {
                 await SendPaymentAsync();
@@ -98,7 +105,8 @@ namespace XRPL.C
                 IRippleClient client = new RippleClient(WebSocketUrl);
                 client.Connect();
                 uint sequence = await GetLatestAccountSequence(client, XRPLAddress);
-                var f = await client.Fees();
+                FeeRequest request = new FeeRequest();
+                var f = await client.Fee(request);
 
                 while (Convert.ToInt32(Math.Floor(f.Drops.OpenLedgerFee * FeeMultiplier)) > MaximumFee)
                 {
@@ -106,7 +114,8 @@ namespace XRPL.C
                     PaymentTextQueue.Enqueue("XRPL Fees:" + " Fees configured based on fee multiplier: " + Convert.ToInt32(Math.Floor(f.Drops.OpenLedgerFee * FeeMultiplier)) + "\n");
                     PaymentTextQueue.Enqueue("XRPL Fees:" + " Maximum Fee Configured: " + MaximumFee + "\n");
                     Thread.Sleep(AccountLinesThrottle * 1000);
-                    f = await client.Fees();
+                    FeeRequest request1 = new FeeRequest();
+                    f = await client.Fee(request1);
                 }
 
                 int feeInDrops = Convert.ToInt32(Math.Floor(f.Drops.OpenLedgerFee * FeeMultiplier));
@@ -174,7 +183,7 @@ namespace XRPL.C
         {
             try
             {
-                IPaymentTransaction paymentTransaction = new PaymentTransaction
+                IPayment paymentTransaction = new Payment
                 {
                     Account = XRPLAddress,
                     Destination = TargetAddress,
@@ -188,15 +197,16 @@ namespace XRPL.C
                     paymentTransaction.SendMax = new Currency { CurrencyCode = this.CurrencyCode, Issuer = IssuerAddress, Value = (TargetAmount + (Convert.ToSingle(TargetAmount) * (transferFee / 100))).ToString() };
                 }
 
-                TxSigner signer = TxSigner.FromSecret(XRPLSecret);  //secret is not sent to server, offline signing only
-                SignedTx signedTx = signer.SignJson(JObject.Parse(paymentTransaction.ToJson()));
+                Wallet wallet = Wallet.FromSeed(XRPLSecret); //secret is not sent to server, offline signing only
+                Dictionary<string, dynamic> paymentJson = JsonConvert.DeserializeObject<Dictionary<string, dynamic>>(paymentTransaction.ToJson());
+                SignatureResult signedTx = wallet.Sign(paymentJson);
 
-                SubmitBlobRequest request = new SubmitBlobRequest()
+                SubmitRequest request = new SubmitRequest()
                 {
-                    TransactionBlob = signedTx.TxBlob
+                    TxBlob = signedTx.TxBlob
                 };
 
-                Submit result = await client.SubmitTransactionBlob(request);
+                Submit result = await client.Submit(request);
 
                 return result;
             }
@@ -211,7 +221,8 @@ namespace XRPL.C
         {
             try
             {
-                AccountInfo accountInfo = await client.AccountInfo(account);
+                AccountInfoRequest request = new AccountInfoRequest(account);
+                AccountInfo accountInfo = await client.AccountInfo(request);
                 return accountInfo.AccountData.Sequence;
 
             }
@@ -223,6 +234,7 @@ namespace XRPL.C
 
         public void GetBookOffers()
         {
+            Debug.Log("Get Book Offers!");
             var getBookOffersTask = Task.Run(async () =>
             {
                 await GetBookOffersAsync();
@@ -236,16 +248,16 @@ namespace XRPL.C
                 IRippleClient client = new RippleClient(WebSocketUrl);
                 client.Connect();
 
-                Currency fromCurrency = null;
-                Currency toCurrency = null;
+                TakerAmount fromCurrency = null;
+                TakerAmount toCurrency = null;
 
-                fromCurrency = new Currency
+                fromCurrency = new TakerAmount
                 {
-                    CurrencyCode = CurrencyCode,
+                    Currency = CurrencyCode,
                     Issuer = IssuerAddress
                 };
 
-                toCurrency = new Currency();
+                toCurrency = new TakerAmount();
 
                 BookOffersRequest request1 = new()
                 {
@@ -315,7 +327,9 @@ namespace XRPL.C
             {
                 IRippleClient client = new RippleClient(WebSocketUrl);
                 client.Connect();
-                AccountInfo accountInfo = await client.AccountInfo(TargetAddress);
+                
+                AccountInfoRequest request = new AccountInfoRequest(TargetAddress);
+                AccountInfo accountInfo = await client.AccountInfo(request);
                 client.Disconnect();
 
                 BalanceTextQueue.Enqueue((accountInfo.AccountData.Balance.ValueAsXrp.HasValue ? accountInfo.AccountData.Balance.ValueAsXrp.Value : 0) + " XRP" + "\n");
@@ -328,6 +342,7 @@ namespace XRPL.C
 
         public void ReturnTrustLines()
         {
+            Debug.Log("Get Trustlines!");
             var returnTrustLinesTask = Task.Run(async () =>
             {
                 await ReturnTrustLinesAsync();
@@ -369,20 +384,6 @@ namespace XRPL.C
             catch (Exception ex)
             {
                 TrustlinesTextQueue.Enqueue(ex.Source + ex.Message + ex + "\n");
-            }
-        }
-
-        public bool ReturnValidXRPAddress(string account)
-        {
-            try
-            {
-                if (account.StartsWith('r') && !account.Contains('O') && !account.Contains('I') && !account.Contains('l') && account.Length >= 25 && account.Length <= 35 && regex.IsMatch(account)) return true;
-                else return false;
-            }
-            catch (Exception ex)
-            {
-                Debug.Log(ex.Source + ex.Message + ex);
-                return false;
             }
         }
 
